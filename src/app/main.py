@@ -94,6 +94,11 @@ def _mount_media() -> None:
     static_dir = Path(__file__).resolve().parent / "static"
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir), check_dir=True), name="static")
+    # Mount SvelteKit build at root (/) if present on device at /opt/skylapse/web
+    # API routes take precedence; Starlette will fall back to static for unmatched paths.
+    svelte_dir = Path("/opt/skylapse/web")
+    if svelte_dir.exists():
+        app.mount("/", StaticFiles(directory=str(svelte_dir), html=True), name="frontend")
 
 
 # --- Session utilities (HMAC-signed cookie) ---

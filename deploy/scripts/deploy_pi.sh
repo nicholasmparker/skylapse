@@ -61,7 +61,21 @@ rsync -az --delete \
   -e "ssh -p ${SSH_PORT} ${SSH_IDENTITY:+-i ${SSH_IDENTITY}} -o StrictHostKeyChecking=accept-new ${SSH_OPTS}" \
   ./ "${USER}@${HOST}:${TARGET_DIR}/"
 
-echo "[3/6] Create venv (with system site packages) and install runtime dependencies"
+# Build and upload frontend if present
+echo "[3/6] Build web frontend (if present) and upload"
+if [[ -d "web" ]]; then
+  echo "[3/6] Building frontend locally (web/)"
+  (cd web && npm ci && npm run build)
+  echo "[3b/6] Upload web build to /opt/skylapse/web"
+  run_ssh "mkdir -p /opt/skylapse/web"
+  rsync -az --delete \
+    -e "ssh -p ${SSH_PORT} ${SSH_IDENTITY:+-i ${SSH_IDENTITY}} -o StrictHostKeyChecking=accept-new ${SSH_OPTS}" \
+    web/build/ "${USER}@${HOST}:/opt/skylapse/web/"
+else
+  echo "[3/6] No web/ directory; skipping frontend build"
+fi
+
+echo "[4/6] Create venv (with system site packages) and install runtime dependencies"
 # Step A: create/prepare venv and install deps
 run_ssh "cd ${TARGET_DIR} && if [[ ! -d .venv ]]; then ${PY} -m venv .venv --system-site-packages; fi && . .venv/bin/activate && pip install -U pip && pip install -e . && pip uninstall -y numpy simplejpeg >/dev/null 2>&1 || true"
 
@@ -77,7 +91,7 @@ fi
 
 # Removed noisy Step C: relying on --system-site-packages avoids ABI mismatch without pinning numpy.
 
-echo "[4/6] Install systemd service (requires sudo)"
+echo "[5/6] Install systemd service (requires sudo)"
 # Template the service User/Group to match the SSH USER
 run_ssh "sudo sh -c '
   set -e
@@ -103,7 +117,7 @@ EOF
   run_ssh "sudo mv /tmp/${PROJECT_NAME}.env ${ENV_FILE} && sudo chown root:root ${ENV_FILE} && sudo chmod 600 ${ENV_FILE}"
   rm -f "${TMP_ENV}"
 else
-  echo "[5/6] Environment file exists; leaving unchanged (${ENV_FILE})"
+  echo "[6/6] Environment file exists; leaving unchanged (${ENV_FILE})"
 fi
 
 echo "[6/6] Enable and restart service"
