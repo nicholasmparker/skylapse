@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import base64
+import hmac
+import json
 import os
 import shutil
+import time
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from typing import Annotated, Any
 
 import cv2
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Security, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response, Security, status
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
@@ -35,9 +40,10 @@ _bearer_scheme = HTTPBearer(auto_error=False)
 
 def admin_auth_dependency(
     cfg: Annotated[AppConfig, Depends(get_config)],
-    creds: Annotated[HTTPAuthorizationCredentials | None, Security(_bearer_scheme)],
+    request: Request,
+    creds: Annotated[HTTPAuthorizationCredentials | None, Security(_bearer_scheme)] = None,
 ) -> None:
-    """Require Authorization: Bearer <token> for admin endpoints.
+    """Require Authorization: Bearer <token> or session cookie for admin endpoints.
 
     The token is read from cfg.ui.auth.token or ADMIN_TOKEN env. We intentionally do not
     log tokens. Returns None on success, raises HTTPException otherwise.
@@ -52,11 +58,16 @@ def admin_auth_dependency(
             },
         )
 
-    if not creds or (creds.scheme or "").lower() != "bearer" or creds.credentials != token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "unauthorized"},
-        )
+    # First, allow a valid session cookie
+    if _session_is_valid_from_request(request, token_required=bool(token)):
+        return
+    # Otherwise allow explicit Bearer token
+    if creds and (creds.scheme or "").lower() == "bearer" and creds.credentials == token:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail={"error": "unauthorized"},
+    )
 
 
 app = FastAPI(
@@ -83,6 +94,99 @@ def _mount_media() -> None:
     static_dir = Path(__file__).resolve().parent / "static"
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir), check_dir=True), name="static")
+
+
+# --- Session utilities (HMAC-signed cookie) ---
+SESSION_COOKIE = "skylapse_session"
+SESSION_TTL_SECONDS = 12 * 60 * 60  # 12 hours
+
+
+def _get_session_secret() -> str:
+    secret = os.getenv("SESSION_SECRET")
+    if not secret:
+        # Fallback to ADMIN_TOKEN to avoid bricking login if unset.
+        secret = os.getenv("ADMIN_TOKEN", "")
+    return secret
+
+
+def _sign(payload: dict[str, Any]) -> str:
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    mac = hmac.new(_get_session_secret().encode("utf-8"), raw, sha256).digest()
+    return base64.urlsafe_b64encode(raw + b"." + mac).decode("ascii")
+
+
+def _unsign(token: str) -> dict[str, Any] | None:
+    try:
+        data = base64.urlsafe_b64decode(token.encode("ascii"))
+        raw, mac = data.rsplit(b".", 1)
+        exp_mac = hmac.new(_get_session_secret().encode("utf-8"), raw, sha256).digest()
+        if not hmac.compare_digest(mac, exp_mac):
+            return None
+        obj = json.loads(raw.decode("utf-8"))
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
+
+
+def get_session_cookie(request: Request) -> str | None:
+    return request.cookies.get(SESSION_COOKIE)
+
+
+def _session_is_valid_from_request(request: Request, token_required: bool) -> bool:
+    raw = get_session_cookie(request)
+    if not raw:
+        return False
+    obj = _unsign(raw)
+    if not obj:
+        return False
+    try:
+        exp = float(obj.get("exp", 0))
+    except Exception:
+        return False
+    return exp > time.time()
+
+
+def _issue_session_cookie(response: Response, subject: str) -> None:
+    now = int(time.time())
+    payload = {"sub": subject, "iat": now, "exp": now + SESSION_TTL_SECONDS, "v": 1}
+    token = _sign(payload)
+    response.set_cookie(
+        key=SESSION_COOKIE,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=False,  # set True if behind HTTPS
+        max_age=SESSION_TTL_SECONDS,
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.set_cookie(key=SESSION_COOKIE, value="", max_age=0, expires=0, path="/")
+
+
+class LoginRequest(BaseModel):
+    password: str
+
+
+@app.post("/api/login")
+def api_login(payload: LoginRequest, response: Response) -> JSONResponse:
+    password = payload.password
+    ui_password = os.getenv("SKYLAPSE_UI_PASSWORD") or os.getenv("ADMIN_TOKEN")
+    if not ui_password:
+        raise HTTPException(status_code=503, detail={"error": "ui_password_not_configured"})
+    if not password or password != ui_password:
+        raise HTTPException(status_code=401, detail={"error": "invalid_credentials"})
+    resp = JSONResponse({"ok": True})
+    _issue_session_cookie(resp, subject="admin")
+    return resp
+
+
+@app.post("/api/logout")
+def api_logout(response: Response) -> JSONResponse:
+    resp = JSONResponse({"ok": True})
+    _clear_session_cookie(resp)
+    return resp
 
 
 @app.get("/api/latest", response_model=LatestResponse)
@@ -139,7 +243,7 @@ def index() -> FileResponse:
 admin_router = APIRouter(
     prefix="/api/admin",
     tags=["admin"],
-    dependencies=[Security(_bearer_scheme), Depends(admin_auth_dependency)],
+    dependencies=[Depends(admin_auth_dependency)],
 )
 
 

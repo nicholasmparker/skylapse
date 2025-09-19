@@ -39,12 +39,14 @@
     </section>
     <aside>
       <div class="card" style="margin-bottom:12px">
-        <h3 style="margin-top:0">Admin</h3>
-        <label for="token">Bearer Token</label>
-        <input id="token" type="password" placeholder="Enter ADMIN_TOKEN" />
-        <div style="display:flex; gap:8px; margin-top:8px">
-          <button id="btn-capture">Capture Once</button>
-          <button id="btn-focus">Focus Score</button>
+        <h3 style="margin-top:0">Focus</h3>
+        <div id="score-line" style="font-size:22px; font-weight:600; margin-bottom:6px;">Score: —</div>
+        <div style="display:flex; gap:8px; margin-top:4px; flex-wrap:wrap">
+          <button id="btn-capture">Capture + Compute (C)</button>
+          <button id="btn-focus">Recompute (R)</button>
+          <button id="btn-auto">Auto: Off (A)</button>
+          <button id="btn-login">Login</button>
+          <button id="btn-logout" disabled>Logout</button>
         </div>
         <div id="admin-out" style="margin-top:8px; font-size:12px"></div>
       </div>
@@ -54,16 +56,39 @@
       </div>
     </aside>
   </main>
+  <dialog id="login-modal">
+    <form method="dialog" style="min-width:320px">
+      <h3>Login</h3>
+      <label for="password">Password</label>
+      <input id="password" type="password" placeholder="Enter password" />
+      <div style="display:flex; gap:8px; margin-top:12px; justify-content:flex-end">
+        <button id="login-cancel" value="cancel">Cancel</button>
+        <button id="login-submit" value="confirm">Login</button>
+      </div>
+      <div id="login-error" style="color:#b00; margin-top:8px; font-size:12px"></div>
+    </form>
+  </dialog>
   <script>
     const $ = (s)=>document.querySelector(s);
     const latestImg = $('#latest-img');
     const latestMeta = $('#latest-meta');
     const recentList = $('#recent');
     const out = $('#admin-out');
+    const scoreLine = $('#score-line');
+    const dlg = $('#login-modal');
+    const loginErr = $('#login-error');
+    let auto = false;
+    let autoTimer = null;
 
     async function getJSON(url, opts={}) {
       const r = await fetch(url, opts);
       if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      return await r.json();
+    }
+
+    async function postJSON(url, body) {
+      const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body||{}) });
+      if (!r.ok) throw new Error(`${r.status}`);
       return await r.json();
     }
 
@@ -99,26 +124,62 @@
 
     async function callAdmin(path, method='GET') {
       out.textContent = '';
-      const token = $('#token').value.trim();
-      if (!token) { out.textContent = 'Set token first'; return; }
       try {
-        const r = await fetch(path, { method, headers: { 'Authorization': `Bearer ${token}` }});
+        const r = await fetch(path, { method });
         const text = await r.text();
         try { out.textContent = JSON.stringify(JSON.parse(text), null, 2); }
         catch { out.textContent = text; }
         await loadLatest();
         await loadRecent();
+        if (path.includes('focus')) { try { updateScore(JSON.parse(text)); } catch{} }
       } catch (e) {
-        out.textContent = 'Request failed';
+        if (e.message.startsWith('401')) showLogin(); else out.textContent = 'Request failed';
       }
     }
 
+    function badge(color){ return `<span style="background:${color};color:#fff;padding:2px 6px;border-radius:6px;font-size:12px;margin-left:6px">${color.toUpperCase()}</span>`; }
+    function updateScore(data){
+      if (!data || data.score == null){ scoreLine.textContent = 'Score: —'; return; }
+      const s = Number(data.score);
+      let color = '#d33'; if (s>300) color='#2b8a3e'; else if (s>=100) color='#ca8a04';
+      scoreLine.innerHTML = `Score: ${s.toFixed(1)} ${badge(color)}`;
+    }
+
+    async function computeScore(){
+      try { const data = await getJSON('/api/admin/focus_score'); updateScore(data); }
+      catch (e){ if (e.message.startsWith('401')) showLogin(); }
+    }
+
+    function startAuto(){ auto=true; $('#btn-auto').textContent='Auto: On (A)'; autoTimer=setInterval(async()=>{ await computeScore(); await loadLatest(); }, 2000); }
+    function stopAuto(){ auto=false; $('#btn-auto').textContent='Auto: Off (A)'; if (autoTimer) clearInterval(autoTimer); }
+    function toggleAuto(){ auto?stopAuto():startAuto(); }
+
+    function showLogin(){ loginErr.textContent=''; dlg.showModal(); $('#password').focus(); }
+    async function doLogin(){
+      loginErr.textContent='';
+      try { await postJSON('/api/login', { password: $('#password').value }); dlg.close(); $('#btn-logout').disabled=false; await computeScore(); }
+      catch { loginErr.textContent='Invalid password'; }
+    }
+    async function doLogout(){ try { await postJSON('/api/logout', {}); $('#btn-logout').disabled=true; stopAuto(); out.textContent=''; scoreLine.textContent='Score: —'; } catch {}
+    }
+
     $('#refresh').addEventListener('click', ()=>{ loadLatest(); loadRecent(); });
-    $('#btn-capture').addEventListener('click', ()=>callAdmin('/api/admin/capture_once', 'POST'));
-    $('#btn-focus').addEventListener('click', ()=>callAdmin('/api/admin/focus_score'));
+    $('#btn-capture').addEventListener('click', async()=>{ await callAdmin('/api/admin/capture_once','POST'); await computeScore(); });
+    $('#btn-focus').addEventListener('click', ()=>computeScore());
+    $('#btn-auto').addEventListener('click', ()=>toggleAuto());
+    $('#btn-login').addEventListener('click', ()=>showLogin());
+    $('#btn-logout').addEventListener('click', ()=>doLogout());
+    $('#login-submit').addEventListener('click', (e)=>{ e.preventDefault(); doLogin(); });
+    $('#login-cancel').addEventListener('click', ()=>dlg.close());
+    window.addEventListener('keydown', (e)=>{
+      if (e.key==='c' || e.key==='C') $('#btn-capture').click();
+      if (e.key==='r' || e.key==='R') $('#btn-focus').click();
+      if (e.key==='a' || e.key==='A') $('#btn-auto').click();
+    });
 
     loadLatest();
     loadRecent();
+    computeScore();
   </script>
 </body>
 </html>
