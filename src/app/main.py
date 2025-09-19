@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import APIRouter
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import Security
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -34,7 +36,7 @@ _bearer_scheme = HTTPBearer(auto_error=False)
 
 def admin_auth_dependency(
     cfg: Annotated[AppConfig, Depends(get_config)],
-    creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer_scheme)],
+    creds: Annotated[HTTPAuthorizationCredentials | None, Security(_bearer_scheme)],
 ) -> None:
     """Require Authorization: Bearer <token> for admin endpoints.
 
@@ -55,7 +57,14 @@ def admin_auth_dependency(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail={"error": "unauthorized"})
 
 
-app = FastAPI(title="Skylapse API")
+app = FastAPI(
+    title="Skylapse API",
+    description=(
+        "Admin endpoints require Authorization: Bearer <token>. "
+        "Set ADMIN_TOKEN in the service environment (e.g., /etc/skylapse/skylapse.env) and click Authorize in this UI."
+    ),
+    swagger_ui_parameters={"persistAuthorization": True},
+)
 
 
 @app.on_event("startup")
@@ -92,8 +101,15 @@ def get_latest(cfg: Annotated[AppConfig, Depends(get_config)]):
     )
 
 
-@app.get("/api/admin/health")
-def health(cfg: Annotated[AppConfig, Depends(get_config)], _auth: Annotated[None, Depends(admin_auth_dependency)]):
+admin_router = APIRouter(
+    prefix="/api/admin",
+    tags=["admin"],
+    dependencies=[Security(_bearer_scheme), Depends(admin_auth_dependency)],
+)
+
+
+@admin_router.get("/health")
+def health(cfg: Annotated[AppConfig, Depends(get_config)]):
     # Cross-platform disk usage
     local_dir = Path(cfg.storage.local_dir)
     disk = shutil.disk_usage(local_dir if local_dir.exists() else "/")
@@ -155,8 +171,8 @@ def api_list_images(
 
 
 # Placeholder admin action endpoints to be implemented later per PRD
-@app.post("/api/admin/capture_once")
-def capture_once(cfg: Annotated[AppConfig, Depends(get_config)], _auth: Annotated[None, Depends(admin_auth_dependency)]):
+@admin_router.post("/capture_once")
+def capture_once(cfg: Annotated[AppConfig, Depends(get_config)]):
     # Initialize service with capture controls from config
     service = CaptureService(
         storage_dir=Path(cfg.storage.local_dir),
@@ -175,6 +191,8 @@ def capture_once(cfg: Annotated[AppConfig, Depends(get_config)], _auth: Annotate
     }
 
 
-@app.post("/api/admin/build_timelapse")
-def build_timelapse(_auth: Annotated[None, Depends(admin_auth_dependency)]):
+@admin_router.post("/build_timelapse")
+def build_timelapse():
     raise HTTPException(status_code=501, detail="Not implemented: build_timelapse")
+
+app.include_router(admin_router)
