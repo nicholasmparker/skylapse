@@ -240,6 +240,16 @@ def index() -> FileResponse:
     return FileResponse(str(index_path))
 
 
+@app.get("/focus")
+def focus_page() -> FileResponse:
+    """Serve the dedicated focus UI."""
+    fpath = Path(__file__).resolve().parent / "static" / "focus.html"
+    # Fallback to index if dedicated page missing (during migration)
+    if not fpath.exists():
+        return index()
+    return FileResponse(str(fpath))
+
+
 admin_router = APIRouter(
     prefix="/api/admin",
     tags=["admin"],
@@ -395,6 +405,46 @@ def focus_score(cfg: Annotated[AppConfig, Depends(get_config)]) -> dict[str, Any
         "url": item["url"],
         "width": int(item.get("width") or img.shape[1]),
         "height": int(item.get("height") or img.shape[0]),
+        "score": score,
+    }
+
+
+class CaptureAndScoreRequest(BaseModel):
+    lock_ae: bool | None = None
+    lock_awb: bool | None = None
+
+
+@admin_router.post("/capture_and_score")
+def capture_and_score(
+    cfg: Annotated[AppConfig, Depends(get_config)],
+    payload: CaptureAndScoreRequest | None = None,
+) -> dict[str, Any]:
+    """Capture an image and return focus score with metadata.
+
+    Returns JSON: { path, url, ts, width, height, score }
+    """
+    service = CaptureService(
+        storage_dir=Path(cfg.storage.local_dir),
+        resolution_str=cfg.capture.resolution,
+        exposure_mode=("manual" if lock_ae else cfg.capture.exposure_mode),
+        awb_mode=("manual" if lock_awb else cfg.capture.awb_mode),
+        iso=cfg.capture.iso,
+        shutter_speed_us=cfg.capture.shutter_speed_us,
+    )
+    out = service.capture_once()
+    img_path = Path(out.path).resolve()
+    img = cv2.imread(str(img_path))
+    if img is None:
+        raise HTTPException(status_code=500, detail="Failed to read captured image")
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    lap = cv2.Laplacian(gray, cv2.CV_64F)
+    score = float(lap.var())
+    return {
+        "path": out.path,
+        "url": out.url,
+        "ts": out.captured_at,
+        "width": int(img.shape[1]),
+        "height": int(img.shape[0]),
         "score": score,
     }
 
