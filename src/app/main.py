@@ -12,6 +12,9 @@ from pydantic import BaseModel
 
 from app.config import AppConfig, load_config
 from app.capture import CaptureService
+from app.camera import get_camera
+from app.db import list_media
+from datetime import datetime, timezone, timedelta
 
 
 class LatestResponse(BaseModel):
@@ -96,10 +99,64 @@ def health(cfg: Annotated[AppConfig, Depends(get_config)], _auth: Annotated[None
     )
 
 
+# Utilities
+def _parse_iso_or_date_to_unix(value: str, *, is_upper_bound: bool = False) -> float:
+    """Parse ISO8601 string or YYYY-MM-DD (UTC) to unix seconds.
+
+    If date-only and is_upper_bound=True, returns end-of-day (next day start minus 1e-6s).
+    Otherwise for date-only returns start-of-day 00:00:00Z.
+    """
+    v = value.strip()
+    try:
+        if len(v) == 10 and v[4] == '-' and v[7] == '-':
+            # YYYY-MM-DD as UTC
+            dt = datetime.fromisoformat(v).replace(tzinfo=timezone.utc)
+            if is_upper_bound:
+                dt = dt + timedelta(days=1) - timedelta(microseconds=1)
+            return dt.timestamp()
+        # Accept a trailing 'Z'
+        if v.endswith('Z'):
+            v = v[:-1] + '+00:00'
+        dt = datetime.fromisoformat(v)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        raise HTTPException(status_code=400, detail={"error": "invalid_datetime", "value": value})
+
+
+@app.get("/api/images")
+def api_list_images(
+    cfg: Annotated[AppConfig, Depends(get_config)],
+    from_: str | None = None,
+    to: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+):
+    from_ts = _parse_iso_or_date_to_unix(from_, is_upper_bound=False) if from_ else None
+    to_ts = _parse_iso_or_date_to_unix(to, is_upper_bound=True) if to else None
+    result = list_media(
+        Path(cfg.storage.local_dir),
+        from_ts=from_ts,
+        to_ts=to_ts,
+        page=page,
+        page_size=min(max(page_size, 1), 200),
+    )
+    return result
+
+
 # Placeholder admin action endpoints to be implemented later per PRD
 @app.post("/api/admin/capture_once")
 def capture_once(cfg: Annotated[AppConfig, Depends(get_config)], _auth: Annotated[None, Depends(admin_auth_dependency)]):
-    service = CaptureService(storage_dir=Path(cfg.storage.local_dir), resolution_str=cfg.capture.resolution)
+    # Initialize service with capture controls from config
+    service = CaptureService(
+        storage_dir=Path(cfg.storage.local_dir),
+        resolution_str=cfg.capture.resolution,
+        exposure_mode=cfg.capture.exposure_mode,
+        awb_mode=cfg.capture.awb_mode,
+        iso=cfg.capture.iso,
+        shutter_speed_us=cfg.capture.shutter_speed_us,
+    )
     output = service.capture_once()
     return {
         "path": str(output.path),

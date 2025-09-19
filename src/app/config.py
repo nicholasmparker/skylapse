@@ -24,6 +24,11 @@ class CaptureConfig(BaseModel):
     interval_day_sec: int = 30
     interval_dusk_sec: int = 5
     resolution: str = "4056x3040"
+    # Capture controls
+    exposure_mode: str = Field(default="auto")  # auto|manual
+    awb_mode: str = Field(default="auto")  # auto|incandescent|fluorescent|daylight|cloudy|manual
+    iso: Optional[int] = None  # e.g., 100..800; None = auto
+    shutter_speed_us: Optional[int] = None  # microseconds; None = auto
     hdr: HDRConfig = Field(default_factory=HDRConfig)
     stacking: StackingConfig = Field(default_factory=StackingConfig)
 
