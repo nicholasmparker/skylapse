@@ -61,8 +61,19 @@ rsync -az --delete \
   -e "ssh -p ${SSH_PORT} ${SSH_IDENTITY:+-i ${SSH_IDENTITY}} -o StrictHostKeyChecking=accept-new ${SSH_OPTS}" \
   ./ "${USER}@${HOST}:${TARGET_DIR}/"
 
-echo "[3/6] Create venv and install runtime dependencies"
-run_ssh "cd ${TARGET_DIR} && if [[ ! -d .venv ]]; then ${PY} -m venv .venv; fi && . .venv/bin/activate && pip install -U pip && pip install -e ."
+echo "[3/6] Create venv (with system site packages) and install runtime dependencies"
+run_ssh "cd ${TARGET_DIR} && \
+  if [[ ! -d .venv ]]; then \
+    ${PY} -m venv .venv --system-site-packages; \
+  fi && \
+  . .venv/bin/activate && pip install -U pip && pip install -e . && \
+  python -c 'import importlib; import sys; sys.exit(0 if importlib.util.find_spec("picamera2") else 1)' || ( \
+    echo 'picamera2 not visible in venv; recreating with --system-site-packages' >&2; \
+    deactivate || true; \
+    rm -rf .venv; \
+    ${PY} -m venv .venv --system-site-packages; \
+    . .venv/bin/activate && pip install -U pip && pip install -e . \
+  )"
 
 echo "[4/6] Install systemd service (requires sudo)"
 # Template the service User/Group to match the SSH USER
