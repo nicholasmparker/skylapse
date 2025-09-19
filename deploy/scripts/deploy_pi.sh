@@ -75,12 +75,7 @@ PY
   run_ssh "cd ${TARGET_DIR} && rm -rf .venv && ${PY} -m venv .venv --system-site-packages && . .venv/bin/activate && pip install -U pip && pip install -e . && pip uninstall -y numpy simplejpeg >/dev/null 2>&1 || true"
 fi
 
-# Step C: ensure venv numpy matches system numpy to satisfy simplejpeg ABI
-echo "[3c/6] Align numpy version in venv with system numpy"
-SYS_NUMPY_VER=$(ssh -p "${SSH_PORT}" ${SSH_IDENTITY:+-i ${SSH_IDENTITY}} -o StrictHostKeyChecking=accept-new ${SSH_OPTS} "${USER}@${HOST}" "python3 - <<'PY'\nimport numpy as np\nprint(np.__version__)\nPY")
-if [[ -n "${SYS_NUMPY_VER}" ]]; then
-  run_ssh "cd ${TARGET_DIR} && . .venv/bin/activate && pip install --no-build-isolation -U 'numpy==${SYS_NUMPY_VER}' >/dev/null 2>&1 || true"
-fi
+# Removed noisy Step C: relying on --system-site-packages avoids ABI mismatch without pinning numpy.
 
 echo "[4/6] Install systemd service (requires sudo)"
 # Template the service User/Group to match the SSH USER

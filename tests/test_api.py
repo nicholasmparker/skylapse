@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -20,7 +19,7 @@ def test_health_ok_with_token(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("ADMIN_TOKEN", "test-token")
     monkeypatch.setenv("SKYLAPSE_LOCAL_DIR", str(tmp_path))
     client = TestClient(app)
-    resp = client.get("/api/admin/health")
+    resp = client.get("/api/admin/health", headers={"Authorization": "Bearer test-token"})
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"

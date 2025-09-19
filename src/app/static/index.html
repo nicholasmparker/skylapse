@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Skylapse</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; }
+    header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid #ddd; }
+    h1 { font-size: 18px; margin: 0; }
+    main { display: grid; grid-template-columns: 1fr 320px; gap: 16px; padding: 16px; }
+    #latest { display: flex; flex-direction: column; gap: 8px; }
+    #latest img { max-width: 100%; height: auto; border-radius: 6px; border: 1px solid #ddd; background: #f8f8f8; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 12px; background: #fff; }
+    label { font-size: 12px; color: #666; display: block; margin-bottom: 4px; }
+    input[type="password"], input[type="text"] { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px; }
+    button { padding: 8px 10px; border: 1px solid #888; border-radius: 6px; background: #f2f2f2; cursor: pointer; }
+    button[disabled] { opacity: 0.5; cursor: not-allowed; }
+    small.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li { padding: 6px 0; border-bottom: 1px solid #eee; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Skylapse</h1>
+    <div>
+      <button id="refresh">Refresh</button>
+    </div>
+  </header>
+  <main>
+    <section id="latest">
+      <div class="card">
+        <h2 style="margin-top:0">Latest</h2>
+        <div id="latest-meta" style="font-size:13px;color:#555"></div>
+        <img id="latest-img" alt="Latest" />
+      </div>
+    </section>
+    <aside>
+      <div class="card" style="margin-bottom:12px">
+        <h3 style="margin-top:0">Admin</h3>
+        <label for="token">Bearer Token</label>
+        <input id="token" type="password" placeholder="Enter ADMIN_TOKEN" />
+        <div style="display:flex; gap:8px; margin-top:8px">
+          <button id="btn-capture">Capture Once</button>
+          <button id="btn-focus">Focus Score</button>
+        </div>
+        <div id="admin-out" style="margin-top:8px; font-size:12px"></div>
+      </div>
+      <div class="card">
+        <h3 style="margin-top:0">Recent</h3>
+        <ul id="recent"></ul>
+      </div>
+    </aside>
+  </main>
+  <script>
+    const $ = (s)=>document.querySelector(s);
+    const latestImg = $('#latest-img');
+    const latestMeta = $('#latest-meta');
+    const recentList = $('#recent');
+    const out = $('#admin-out');
+
+    async function getJSON(url, opts={}) {
+      const r = await fetch(url, opts);
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      return await r.json();
+    }
+
+    async function loadLatest() {
+      try {
+        const data = await getJSON('/api/latest');
+        if (data && data.image_url) {
+          latestImg.src = data.image_url + `?t=${Date.now()}`;
+          latestMeta.textContent = `Captured: ${data.captured_at ?? 'unknown'}`;
+        } else {
+          latestImg.removeAttribute('src');
+          latestMeta.textContent = 'No image available';
+        }
+      } catch (e) {
+        latestMeta.textContent = 'Failed to load latest';
+      }
+    }
+
+    async function loadRecent() {
+      try {
+        const q = new URLSearchParams({ page: '1', page_size: '10' });
+        const data = await getJSON('/api/images?' + q.toString());
+        recentList.innerHTML = '';
+        (data.items || []).forEach(item => {
+          const li = document.createElement('li');
+          li.innerHTML = `<a href="${item.url}" target="_blank">${item.url}</a><br/><small class="mono">${new Date(item.captured_at*1000).toISOString()}</small>`;
+          recentList.appendChild(li);
+        });
+      } catch (e) {
+        recentList.innerHTML = '<li>Failed to load</li>';
+      }
+    }
+
+    async function callAdmin(path, method='GET') {
+      out.textContent = '';
+      const token = $('#token').value.trim();
+      if (!token) { out.textContent = 'Set token first'; return; }
+      try {
+        const r = await fetch(path, { method, headers: { 'Authorization': `Bearer ${token}` }});
+        const text = await r.text();
+        try { out.textContent = JSON.stringify(JSON.parse(text), null, 2); }
+        catch { out.textContent = text; }
+        await loadLatest();
+        await loadRecent();
+      } catch (e) {
+        out.textContent = 'Request failed';
+      }
+    }
+
+    $('#refresh').addEventListener('click', ()=>{ loadLatest(); loadRecent(); });
+    $('#btn-capture').addEventListener('click', ()=>callAdmin('/api/admin/capture_once', 'POST'));
+    $('#btn-focus').addEventListener('click', ()=>callAdmin('/api/admin/focus_score'));
+
+    loadLatest();
+    loadRecent();
+  </script>
+</body>
+</html>

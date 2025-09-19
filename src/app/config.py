@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError
@@ -27,22 +26,22 @@ class CaptureConfig(BaseModel):
     # Capture controls
     exposure_mode: str = Field(default="auto")  # auto|manual
     awb_mode: str = Field(default="auto")  # auto|incandescent|fluorescent|daylight|cloudy|manual
-    iso: Optional[int] = None  # e.g., 100..800; None = auto
-    shutter_speed_us: Optional[int] = None  # microseconds; None = auto
+    iso: int | None = None  # e.g., 100..800; None = auto
+    shutter_speed_us: int | None = None  # microseconds; None = auto
     hdr: HDRConfig = Field(default_factory=HDRConfig)
     stacking: StackingConfig = Field(default_factory=StackingConfig)
 
 
 class MQTTConfig(BaseModel):
     enabled: bool = False
-    broker: Optional[str] = None
+    broker: str | None = None
     topic_latest_image: str = "timelapse/latest_image"
 
 
 class S3Config(BaseModel):
     enabled: bool = False
-    endpoint: Optional[str] = None
-    bucket: Optional[str] = None
+    endpoint: str | None = None
+    bucket: str | None = None
 
 
 class StorageConfig(BaseModel):
@@ -53,8 +52,8 @@ class StorageConfig(BaseModel):
 
 class UIAuthConfig(BaseModel):
     type: str = "token"  # basic|token
-    username: Optional[str] = None
-    token: Optional[str] = None
+    username: str | None = None
+    token: str | None = None
 
 
 class UIConfig(BaseModel):

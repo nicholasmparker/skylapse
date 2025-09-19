@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import os
-from dataclasses import asdict, dataclass
-from datetime import datetime
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy import Column, Float, Integer, MetaData, String, Table, create_engine, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session
 
 # Simple SQLite setup with a single media table and a minimal migration to v1.
 # DB path: env SKYLAPSE_DB or <storage.local_dir>/media.sqlite3 (provided by caller)
@@ -44,7 +42,7 @@ class MediaRow:
     size_bytes: int
     width: int
     height: int
-    exposure_us: Optional[int]
+    exposure_us: int | None
 
 
 def get_engine(db_path: Path) -> Engine:
@@ -68,7 +66,9 @@ def init_db(storage_dir: Path) -> Path:
         # Create tables if not exist
         metadata.create_all(conn)
         # Initialize schema version if empty
-        cur = conn.execute(text("SELECT COUNT(1) FROM schema_version")) if engine.dialect.has_table(conn, "schema_version") else None
+        cur = None
+        if engine.dialect.has_table(conn, "schema_version"):
+            cur = conn.execute(text("SELECT COUNT(1) FROM schema_version"))
         try:
             count = cur.scalar_one() if cur is not None else 0
         except Exception:
@@ -87,7 +87,7 @@ def insert_media(
     size_bytes: int,
     width: int,
     height: int,
-    exposure_us: Optional[int],
+    exposure_us: int | None,
 ) -> None:
     db_path = init_db(storage_dir)
     engine = get_engine(db_path)
@@ -108,8 +108,8 @@ def insert_media(
 def list_media(
     storage_dir: Path,
     *,
-    from_ts: Optional[float] = None,
-    to_ts: Optional[float] = None,
+    from_ts: float | None = None,
+    to_ts: float | None = None,
     page: int = 1,
     page_size: int = 50,
 ) -> dict[str, Any]:
@@ -130,13 +130,17 @@ def list_media(
 
     with engine.begin() as conn:
         total = conn.execute(text(f"SELECT COUNT(1) FROM media {where_sql}"), params).scalar_one()
-        rows = conn.execute(
-            text(
-                f"SELECT id, path, url, captured_at, size_bytes, width, height, exposure_us "
-                f"FROM media {where_sql} ORDER BY captured_at DESC LIMIT :limit OFFSET :offset"
-            ),
-            {**params, "limit": page_size, "offset": offset},
-        ).mappings().all()
+        rows = (
+            conn.execute(
+                text(
+                    f"SELECT id, path, url, captured_at, size_bytes, width, height, exposure_us "
+                    f"FROM media {where_sql} ORDER BY captured_at DESC LIMIT :limit OFFSET :offset"
+                ),
+                {**params, "limit": page_size, "offset": offset},
+            )
+            .mappings()
+            .all()
+        )
 
     return {
         "page": page,

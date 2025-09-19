@@ -1,26 +1,33 @@
 from __future__ import annotations
 
-import io
 import os
 import time
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
+from typing import Any, cast
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 try:  # Optional import; only available on Raspberry Pi
     from picamera2 import Picamera2  # type: ignore
+
     PICAMERA2_AVAILABLE = True
 except Exception:  # pragma: no cover - not available in most dev envs
-    Picamera2 = None  # type: ignore
+    Picamera2 = None
     PICAMERA2_AVAILABLE = False
 
 
 class CaptureResult:
     """Represents a captured image in-memory along with metadata."""
 
-    def __init__(self, image: Image.Image, captured_at: float, exposure_us: Optional[int] = None, settings: Optional[dict] = None, resolution: Optional[tuple[int, int]] = None):
+    def __init__(
+        self,
+        image: Image.Image,
+        captured_at: float,
+        exposure_us: int | None = None,
+        settings: dict[str, Any] | None = None,
+        resolution: tuple[int, int] | None = None,
+    ):
         self.image = image
         self.captured_at = captured_at  # unix ts
         self.exposure_us = exposure_us
@@ -30,18 +37,24 @@ class CaptureResult:
 
 class BaseCamera(ABC):
     @abstractmethod
-    def capture(self) -> CaptureResult:
-        ...
+    def capture(self) -> CaptureResult: ...
 
     @abstractmethod
-    def close(self) -> None:
-        ...
+    def close(self) -> None: ...
 
 
 class MockCamera(BaseCamera):
-    def __init__(self, resolution: tuple[int, int] = (1280, 720), *, exposure_mode: str = "auto", awb_mode: str = "auto", iso: Optional[int] = None, shutter_speed_us: Optional[int] = None):
+    def __init__(
+        self,
+        resolution: tuple[int, int] = (1280, 720),
+        *,
+        exposure_mode: str = "auto",
+        awb_mode: str = "auto",
+        iso: int | None = None,
+        shutter_speed_us: int | None = None,
+    ):
         self.resolution = resolution
-        self._settings = {
+        self._settings: dict[str, Any] = {
             "camera": "mock",
             "exposure_mode": exposure_mode,
             "awb_mode": awb_mode,
@@ -53,18 +66,32 @@ class MockCamera(BaseCamera):
         w, h = self.resolution
         img = Image.new("RGB", (w, h), color=(30, 30, 30))
         draw = ImageDraw.Draw(img)
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
         text = f"Skylapse Mock\n{ts}"
         draw.rectangle([(20, 20), (w - 20, h - 20)], outline=(200, 200, 200), width=3)
         draw.text((40, 40), text, fill=(220, 220, 220))
-        return CaptureResult(img, time.time(), exposure_us=self._settings.get("shutter_speed_us"), settings=self._settings, resolution=self.resolution)
+        return CaptureResult(
+            img,
+            time.time(),
+            exposure_us=cast(int | None, self._settings.get("shutter_speed_us")),
+            settings=self._settings,
+            resolution=self.resolution,
+        )
 
     def close(self) -> None:  # pragma: no cover - nothing to do
         return
 
 
 class Picamera2Camera(BaseCamera):  # pragma: no cover - exercised on device
-    def __init__(self, resolution: tuple[int, int] = (4056, 3040), *, exposure_mode: str = "auto", awb_mode: str = "auto", iso: Optional[int] = None, shutter_speed_us: Optional[int] = None):
+    def __init__(
+        self,
+        resolution: tuple[int, int] = (4056, 3040),
+        *,
+        exposure_mode: str = "auto",
+        awb_mode: str = "auto",
+        iso: int | None = None,
+        shutter_speed_us: int | None = None,
+    ):
         if not PICAMERA2_AVAILABLE:
             raise RuntimeError("Picamera2 not available in this environment")
         self._picam = Picamera2()
@@ -77,7 +104,7 @@ class Picamera2Camera(BaseCamera):  # pragma: no cover - exercised on device
             if exposure_mode == "auto":
                 self._picam.set_controls({"AeEnable": True})
             else:
-                controls = {"AeEnable": False}
+                controls: dict[str, Any] = {"AeEnable": False}
                 if shutter_speed_us:
                     controls["ExposureTime"] = int(shutter_speed_us)
                 if iso:
@@ -113,7 +140,13 @@ class Picamera2Camera(BaseCamera):  # pragma: no cover - exercised on device
             exposure_time = int(self._picam.capture_metadata().get("ExposureTime", 0))
         except Exception:
             pass
-        return CaptureResult(img, time.time(), exposure_us=exposure_time, settings=self._settings, resolution=self._resolution)
+        return CaptureResult(
+            img,
+            time.time(),
+            exposure_us=exposure_time,
+            settings=self._settings,
+            resolution=self._resolution,
+        )
 
     def close(self) -> None:
         try:
@@ -122,14 +155,22 @@ class Picamera2Camera(BaseCamera):  # pragma: no cover - exercised on device
             self._picam.close()
 
 
-def get_camera(prefer: Optional[str] = None, resolution_str: Optional[str] = None, *, exposure_mode: str = "auto", awb_mode: str = "auto", iso: Optional[int] = None, shutter_speed_us: Optional[int] = None) -> BaseCamera:
+def get_camera(
+    prefer: str | None = None,
+    resolution_str: str | None = None,
+    *,
+    exposure_mode: str = "auto",
+    awb_mode: str = "auto",
+    iso: int | None = None,
+    shutter_speed_us: int | None = None,
+) -> BaseCamera:
     """Factory that returns a camera instance.
 
     prefer: "mock" | "picamera2" | None (env SKYLAPSE_CAMERA)
     resolution_str: like "4056x3040"; if None will use sane defaults.
     """
     prefer = prefer or os.getenv("SKYLAPSE_CAMERA")
-    res: Optional[tuple[int, int]] = None
+    res: tuple[int, int] | None = None
     if resolution_str and "x" in resolution_str:
         try:
             w, h = resolution_str.lower().split("x")
@@ -138,14 +179,38 @@ def get_camera(prefer: Optional[str] = None, resolution_str: Optional[str] = Non
             res = None
 
     if prefer == "mock":
-        return MockCamera(resolution=res or (1280, 720), exposure_mode=exposure_mode, awb_mode=awb_mode, iso=iso, shutter_speed_us=shutter_speed_us)
+        return MockCamera(
+            resolution=res or (1280, 720),
+            exposure_mode=exposure_mode,
+            awb_mode=awb_mode,
+            iso=iso,
+            shutter_speed_us=shutter_speed_us,
+        )
 
     if prefer == "picamera2" or (prefer is None and PICAMERA2_AVAILABLE):
         try:
-            return Picamera2Camera(resolution=res or (4056, 3040), exposure_mode=exposure_mode, awb_mode=awb_mode, iso=iso, shutter_speed_us=shutter_speed_us)
+            return Picamera2Camera(
+                resolution=res or (4056, 3040),
+                exposure_mode=exposure_mode,
+                awb_mode=awb_mode,
+                iso=iso,
+                shutter_speed_us=shutter_speed_us,
+            )
         except Exception:
             # Fallback to mock if hardware init fails
-            return MockCamera(resolution=res or (1280, 720), exposure_mode=exposure_mode, awb_mode=awb_mode, iso=iso, shutter_speed_us=shutter_speed_us)
+            return MockCamera(
+                resolution=res or (1280, 720),
+                exposure_mode=exposure_mode,
+                awb_mode=awb_mode,
+                iso=iso,
+                shutter_speed_us=shutter_speed_us,
+            )
 
     # Default fallback
-    return MockCamera(resolution=res or (1280, 720), exposure_mode=exposure_mode, awb_mode=awb_mode, iso=iso, shutter_speed_us=shutter_speed_us)
+    return MockCamera(
+        resolution=res or (1280, 720),
+        exposure_mode=exposure_mode,
+        awb_mode=awb_mode,
+        iso=iso,
+        shutter_speed_us=shutter_speed_us,
+    )

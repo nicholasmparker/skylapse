@@ -2,29 +2,28 @@ from __future__ import annotations
 
 import os
 import shutil
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, HTTPException, status
-from fastapi import APIRouter
+import cv2
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Security, status
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from fastapi import Security
-from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.config import AppConfig, load_config
+from app.camera import PICAMERA2_AVAILABLE
 from app.capture import CaptureService
-from app.camera import get_camera
+from app.config import AppConfig, load_config
 from app.db import list_media
-from datetime import datetime, timezone, timedelta
 
 
 class LatestResponse(BaseModel):
     image_url: str | None
     captured_at: str | None
-    exposure: dict | None
-    white_balance: dict | None
+    exposure: dict[str, Any] | None
+    white_balance: dict[str, Any] | None
 
 
 def get_config() -> AppConfig:
@@ -54,14 +53,17 @@ def admin_auth_dependency(
         )
 
     if not creds or (creds.scheme or "").lower() != "bearer" or creds.credentials != token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail={"error": "unauthorized"})
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "unauthorized"},
+        )
 
 
 app = FastAPI(
     title="Skylapse API",
     description=(
         "Admin endpoints require Authorization: Bearer <token>. "
-        "Set ADMIN_TOKEN in the service environment (e.g., /etc/skylapse/skylapse.env) and click Authorize in this UI."
+        "Set ADMIN_TOKEN in /etc/skylapse/skylapse.env and click Authorize in this UI."
     ),
     swagger_ui_parameters={"persistAuthorization": True},
 )
@@ -77,28 +79,61 @@ def _mount_media() -> None:
     cfg = load_config()
     media_dir = Path(cfg.storage.local_dir)
     app.mount("/media", StaticFiles(directory=str(media_dir), check_dir=False), name="media")
+    # Mount static frontend directory if exists
+    static_dir = Path(__file__).resolve().parent / "static"
+    if static_dir.exists():
+        app.mount("/static", StaticFiles(directory=str(static_dir), check_dir=True), name="static")
 
 
 @app.get("/api/latest", response_model=LatestResponse)
-def get_latest(cfg: Annotated[AppConfig, Depends(get_config)]):
+def get_latest(cfg: Annotated[AppConfig, Depends(get_config)]) -> LatestResponse:
     base_dir = Path(cfg.storage.local_dir)
-    latest = None
+    # Prefer SQLite media index
+    try:
+        latest = list_media(base_dir, page=1, page_size=1)
+        if latest and latest.get("items"):
+            item = latest["items"][0]
+            ts = item.get("captured_at")
+            captured_iso: str | None = None
+            try:
+                captured_iso = datetime.fromtimestamp(float(ts), tz=UTC).isoformat()
+            except Exception:
+                captured_iso = None
+            return LatestResponse(
+                image_url=item.get("url"),
+                captured_at=captured_iso,
+                exposure=None,
+                white_balance=None,
+            )
+    except Exception:
+        pass
+
+    # Fallback: scan filesystem if DB is empty/unavailable
+    latest_path = None
     for ext in ("jpg", "jpeg", "png"):
         candidates = sorted(base_dir.rglob(f"*.{ext}")) if base_dir.exists() else []
         if candidates:
-            latest = candidates[-1]
+            latest_path = candidates[-1]
             break
-    if not latest:
+    if not latest_path:
         return LatestResponse(image_url=None, captured_at=None, exposure=None, white_balance=None)
 
-    # In a future step, mount static files for direct serving; placeholder for path.
-    rel = latest.relative_to(base_dir)
+    rel = latest_path.relative_to(base_dir)
     return LatestResponse(
         image_url=f"/media/{str(rel).replace(os.sep, '/')}",
         captured_at=None,
         exposure=None,
         white_balance=None,
     )
+
+
+@app.get("/")
+def index() -> FileResponse:
+    """Serve the simple frontend UI."""
+    index_path = Path(__file__).resolve().parent / "static" / "index.html"
+    if not index_path.exists():
+        raise HTTPException(status_code=404, detail="index.html not found")
+    return FileResponse(str(index_path))
 
 
 admin_router = APIRouter(
@@ -109,22 +144,48 @@ admin_router = APIRouter(
 
 
 @admin_router.get("/health")
-def health(cfg: Annotated[AppConfig, Depends(get_config)]):
+def health(
+    cfg: Annotated[AppConfig, Depends(get_config)],
+    _authz: Annotated[HTTPAuthorizationCredentials | None, Security(_bearer_scheme)] = None,
+) -> JSONResponse:
     # Cross-platform disk usage
     local_dir = Path(cfg.storage.local_dir)
     disk = shutil.disk_usage(local_dir if local_dir.exists() else "/")
+    # Determine intended/selected backend without initializing hardware
+    prefer = os.getenv("SKYLAPSE_CAMERA")
+    if prefer == "mock":
+        selected_backend = "mock"
+    elif prefer == "picamera2":
+        selected_backend = "picamera2" if PICAMERA2_AVAILABLE else "mock"
+    else:
+        selected_backend = "picamera2" if PICAMERA2_AVAILABLE else "mock"
+
+    # Most recent capture from SQLite index
+    last_item: dict[str, Any] | None = None
+    try:
+        latest = list_media(local_dir, page=1, page_size=1)
+        if latest.get("items"):
+            last_item = latest["items"][0]
+    except Exception:
+        last_item = None
+
     return JSONResponse(
         {
             "disk_total": disk.total,
             "disk_used": disk.used,
             "disk_free": disk.free,
             "local_dir": str(local_dir),
+            "camera": {
+                "picamera2_import_ok": bool(PICAMERA2_AVAILABLE),
+                "selected_backend": selected_backend,
+                "prefer_env": prefer or None,
+            },
+            "last_capture": last_item,
             "status": "ok",
         }
     )
 
 
-# Utilities
 def _parse_iso_or_date_to_unix(value: str, *, is_upper_bound: bool = False) -> float:
     """Parse ISO8601 string or YYYY-MM-DD (UTC) to unix seconds.
 
@@ -133,21 +194,24 @@ def _parse_iso_or_date_to_unix(value: str, *, is_upper_bound: bool = False) -> f
     """
     v = value.strip()
     try:
-        if len(v) == 10 and v[4] == '-' and v[7] == '-':
+        if len(v) == 10 and v[4] == "-" and v[7] == "-":
             # YYYY-MM-DD as UTC
-            dt = datetime.fromisoformat(v).replace(tzinfo=timezone.utc)
+            dt = datetime.fromisoformat(v).replace(tzinfo=UTC)
             if is_upper_bound:
                 dt = dt + timedelta(days=1) - timedelta(microseconds=1)
             return dt.timestamp()
         # Accept a trailing 'Z'
-        if v.endswith('Z'):
-            v = v[:-1] + '+00:00'
+        if v.endswith("Z"):
+            v = v[:-1] + "+00:00"
         dt = datetime.fromisoformat(v)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt.timestamp()
-    except Exception:
-        raise HTTPException(status_code=400, detail={"error": "invalid_datetime", "value": value})
+    except Exception as err:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_datetime", "value": value},
+        ) from err
 
 
 @app.get("/api/images")
@@ -157,10 +221,10 @@ def api_list_images(
     to: str | None = None,
     page: int = 1,
     page_size: int = 50,
-):
+) -> dict[str, Any]:
     from_ts = _parse_iso_or_date_to_unix(from_, is_upper_bound=False) if from_ else None
     to_ts = _parse_iso_or_date_to_unix(to, is_upper_bound=True) if to else None
-    result = list_media(
+    result: dict[str, Any] = list_media(
         Path(cfg.storage.local_dir),
         from_ts=from_ts,
         to_ts=to_ts,
@@ -172,7 +236,10 @@ def api_list_images(
 
 # Placeholder admin action endpoints to be implemented later per PRD
 @admin_router.post("/capture_once")
-def capture_once(cfg: Annotated[AppConfig, Depends(get_config)]):
+def capture_once(
+    cfg: Annotated[AppConfig, Depends(get_config)],
+    _authz: Annotated[HTTPAuthorizationCredentials | None, Security(_bearer_scheme)] = None,
+) -> dict[str, Any]:
     # Initialize service with capture controls from config
     service = CaptureService(
         storage_dir=Path(cfg.storage.local_dir),
@@ -192,7 +259,41 @@ def capture_once(cfg: Annotated[AppConfig, Depends(get_config)]):
 
 
 @admin_router.post("/build_timelapse")
-def build_timelapse():
+def build_timelapse(
+    _authz: Annotated[HTTPAuthorizationCredentials | None, Security(_bearer_scheme)] = None,
+) -> None:
     raise HTTPException(status_code=501, detail="Not implemented: build_timelapse")
 
+
+@admin_router.get("/focus_score")
+def focus_score(cfg: Annotated[AppConfig, Depends(get_config)]) -> dict[str, Any]:
+    """Compute a focus score (Laplacian variance) on the latest image.
+
+    Returns JSON: { path, url, width, height, score }
+    """
+    base_dir = Path(cfg.storage.local_dir)
+    latest = list_media(base_dir, page=1, page_size=1)
+    if not latest or not latest.get("items"):
+        raise HTTPException(status_code=404, detail="No images available")
+    item = latest["items"][0]
+    img_path = Path(item["path"]).resolve()
+    if not img_path.exists():
+        raise HTTPException(status_code=404, detail="Latest image file not found")
+    # Read via OpenCV for robust grayscale conversion
+    img = cv2.imread(str(img_path))
+    if img is None:
+        raise HTTPException(status_code=500, detail="Failed to read image for focus computation")
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    lap = cv2.Laplacian(gray, cv2.CV_64F)
+    score = float(lap.var())
+    return {
+        "path": item["path"],
+        "url": item["url"],
+        "width": int(item.get("width") or img.shape[1]),
+        "height": int(item.get("height") or img.shape[0]),
+        "score": score,
+    }
+
+
+# Include admin routes after all admin endpoints are defined
 app.include_router(admin_router)

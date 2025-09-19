@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import os
 import json
+import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 from PIL import Image
 
@@ -18,20 +17,20 @@ class CaptureOutput:
     path: Path
     url: str
     captured_at: float
-    exposure_us: Optional[int]
+    exposure_us: int | None
 
 
 class CaptureService:
     def __init__(
         self,
         storage_dir: Path,
-        camera_prefer: Optional[str] = None,
-        resolution_str: Optional[str] = None,
+        camera_prefer: str | None = None,
+        resolution_str: str | None = None,
         *,
         exposure_mode: str = "auto",
         awb_mode: str = "auto",
-        iso: Optional[int] = None,
-        shutter_speed_us: Optional[int] = None,
+        iso: int | None = None,
+        shutter_speed_us: int | None = None,
     ):
         self.storage_dir = storage_dir
         self.camera_prefer = camera_prefer or os.getenv("SKYLAPSE_CAMERA")
@@ -62,7 +61,7 @@ class CaptureService:
         finally:
             cam.close()
 
-        dt = datetime.fromtimestamp(result.captured_at, tz=timezone.utc)
+        dt = datetime.fromtimestamp(result.captured_at, tz=UTC)
         out_dir = self._ensure_dir(dt)
         filename = dt.strftime("%H%M%S") + ".jpg"
         out_path = out_dir / filename
@@ -106,4 +105,9 @@ class CaptureService:
             exposure_us=result.exposure_us,
         )
 
-        return CaptureOutput(path=out_path, url=url, captured_at=result.captured_at, exposure_us=result.exposure_us)
+        return CaptureOutput(
+            path=out_path,
+            url=url,
+            captured_at=result.captured_at,
+            exposure_us=result.exposure_us,
+        )

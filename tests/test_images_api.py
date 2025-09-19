@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -17,14 +17,14 @@ def test_capture_writes_sidecar_and_db(monkeypatch, tmp_path: Path):
     client = TestClient(app)
 
     # Capture two images
-    r1 = client.post("/api/admin/capture_once")
+    r1 = client.post("/api/admin/capture_once", headers={"Authorization": "Bearer test-token"})
     assert r1.status_code == 200, r1.text
     body1 = r1.json()
     p1 = Path(body1["path"])
     assert p1.exists() and p1.suffix == ".jpg"
     assert p1.with_suffix(".json").exists()
 
-    r2 = client.post("/api/admin/capture_once")
+    r2 = client.post("/api/admin/capture_once", headers={"Authorization": "Bearer test-token"})
     assert r2.status_code == 200, r2.text
     body2 = r2.json()
     p2 = Path(body2["path"])
@@ -45,7 +45,7 @@ def test_capture_writes_sidecar_and_db(monkeypatch, tmp_path: Path):
 
     # Filter by today's UTC date
     ts = body1["captured_at"]
-    dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+    dt = datetime.fromtimestamp(ts, tz=UTC)
     day_str = dt.strftime("%Y-%m-%d")
     list_day = client.get("/api/images", params={"from_": day_str, "to": day_str})
     assert list_day.status_code == 200, list_day.text

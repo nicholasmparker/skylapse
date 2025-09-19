@@ -14,7 +14,7 @@ def test_capture_once_saves_image(monkeypatch, tmp_path: Path):
 
     client = TestClient(app)
 
-    resp = client.post("/api/admin/capture_once")
+    resp = client.post("/api/admin/capture_once", headers={"Authorization": "Bearer test-token"})
     assert resp.status_code == 200, resp.text
     body = resp.json()
     p = Path(body["path"])
