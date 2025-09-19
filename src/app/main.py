@@ -423,6 +423,8 @@ def capture_and_score(
 
     Returns JSON: { path, url, ts, width, height, score }
     """
+    lock_ae = bool(payload.lock_ae) if payload and payload.lock_ae is not None else False
+    lock_awb = bool(payload.lock_awb) if payload and payload.lock_awb is not None else False
     service = CaptureService(
         storage_dir=Path(cfg.storage.local_dir),
         resolution_str=cfg.capture.resolution,
