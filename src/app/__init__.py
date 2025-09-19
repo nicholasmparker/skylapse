@@ -1,0 +1,1 @@
+"""Skylapse application package."""

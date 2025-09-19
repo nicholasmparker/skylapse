@@ -1,0 +1,29 @@
+capture:
+  mode: auto
+  interval_day_sec: 30
+  interval_dusk_sec: 5
+  resolution: "4056x3040"
+  hdr:
+    enabled: true
+    exposures: [-2, 0, 2]
+  stacking:
+    enabled: false
+    frames: 3
+    alignment: ecc
+publish:
+  mqtt:
+    enabled: false
+    broker: null
+    topic_latest_image: "timelapse/latest_image"
+storage:
+  local_dir: "/data/timelapse"
+  retention_days: 30
+  s3:
+    enabled: false
+    endpoint: null
+    bucket: null
+ui:
+  auth:
+    type: token
+    username: null
+    token: null

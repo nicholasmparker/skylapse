@@ -1,0 +1,23 @@
+[Unit]
+Description=Skylapse API (FastAPI/uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/opt/skylapse
+Environment=PYTHONUNBUFFERED=1
+# Load sensitive environment values (e.g., ADMIN_TOKEN) from an EnvironmentFile
+# Create this at /etc/skylapse/skylapse.env with root-only permissions
+EnvironmentFile=/etc/skylapse/skylapse.env
+ExecStart=/opt/skylapse/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=3
+# Improve responsiveness/priority; optional
+AmbientCapabilities=CAP_SYS_NICE
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target
