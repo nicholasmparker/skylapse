@@ -62,18 +62,25 @@ rsync -az --delete \
   ./ "${USER}@${HOST}:${TARGET_DIR}/"
 
 echo "[3/6] Create venv (with system site packages) and install runtime dependencies"
-run_ssh "cd ${TARGET_DIR} && \
-  if [[ ! -d .venv ]]; then \
-    ${PY} -m venv .venv --system-site-packages; \
-  fi && \
-  . .venv/bin/activate && pip install -U pip && pip install -e . && \
-  python -c 'import importlib; import sys; sys.exit(0 if importlib.util.find_spec("picamera2") else 1)' || ( \
-    echo 'picamera2 not visible in venv; recreating with --system-site-packages' >&2; \
-    deactivate || true; \
-    rm -rf .venv; \
-    ${PY} -m venv .venv --system-site-packages; \
-    . .venv/bin/activate && pip install -U pip && pip install -e . \
-  )"
+# Step A: create/prepare venv and install deps
+run_ssh "cd ${TARGET_DIR} && if [[ ! -d .venv ]]; then ${PY} -m venv .venv --system-site-packages; fi && . .venv/bin/activate && pip install -U pip && pip install -e . && pip uninstall -y numpy simplejpeg >/dev/null 2>&1 || true"
+
+# Step B: verify picamera2 visibility; if missing, recreate venv and reinstall
+if ! run_ssh "cd ${TARGET_DIR} && . .venv/bin/activate && python - <<'PY'
+import importlib.util, sys
+sys.exit(0 if importlib.util.find_spec('picamera2') else 1)
+PY
+"; then
+  echo "[3b/6] picamera2 not visible; recreating venv with --system-site-packages"
+  run_ssh "cd ${TARGET_DIR} && rm -rf .venv && ${PY} -m venv .venv --system-site-packages && . .venv/bin/activate && pip install -U pip && pip install -e . && pip uninstall -y numpy simplejpeg >/dev/null 2>&1 || true"
+fi
+
+# Step C: ensure venv numpy matches system numpy to satisfy simplejpeg ABI
+echo "[3c/6] Align numpy version in venv with system numpy"
+SYS_NUMPY_VER=$(ssh -p "${SSH_PORT}" ${SSH_IDENTITY:+-i ${SSH_IDENTITY}} -o StrictHostKeyChecking=accept-new ${SSH_OPTS} "${USER}@${HOST}" "python3 - <<'PY'\nimport numpy as np\nprint(np.__version__)\nPY")
+if [[ -n "${SYS_NUMPY_VER}" ]]; then
+  run_ssh "cd ${TARGET_DIR} && . .venv/bin/activate && pip install --no-build-isolation -U 'numpy==${SYS_NUMPY_VER}' >/dev/null 2>&1 || true"
+fi
 
 echo "[4/6] Install systemd service (requires sudo)"
 # Template the service User/Group to match the SSH USER
