@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -28,22 +29,30 @@ def get_config() -> AppConfig:
     return load_config()
 
 
-def admin_auth_dependency(cfg: Annotated[AppConfig, Depends(get_config)]) -> None:
+_bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def admin_auth_dependency(
+    cfg: Annotated[AppConfig, Depends(get_config)],
+    creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer_scheme)],
+) -> None:
+    """Require Authorization: Bearer <token> for admin endpoints.
+
+    The token is read from cfg.ui.auth.token or ADMIN_TOKEN env. We intentionally do not
+    log tokens. Returns None on success, raises HTTPException otherwise.
+    """
     token = cfg.ui.auth.token or os.getenv("ADMIN_TOKEN")
     if not token:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
-                "error": "Admin token not configured",
+                "error": "admin_token_not_configured",
                 "action": "Set ADMIN_TOKEN env var or ui.auth.token in config",
             },
         )
 
-
-def require_admin(token_header: Annotated[str | None, Depends(lambda: os.getenv("ADMIN_TOKEN"))]):
-    # Simple header-less auth placeholder; can be extended to check Authorization header.
-    # For now, ensure token exists (enforced in admin_auth_dependency).
-    return
+    if not creds or (creds.scheme or "").lower() != "bearer" or creds.credentials != token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail={"error": "unauthorized"})
 
 
 app = FastAPI(title="Skylapse API")
