@@ -177,10 +177,12 @@ class LoginRequest(BaseModel):
 @app.post("/api/login")
 def api_login(payload: LoginRequest, response: Response) -> JSONResponse:
     password = payload.password
-    ui_password = os.getenv("SKYLAPSE_UI_PASSWORD") or os.getenv("ADMIN_TOKEN")
-    if not ui_password:
+    pw_ui = os.getenv("SKYLAPSE_UI_PASSWORD")
+    pw_admin = os.getenv("ADMIN_TOKEN")
+    effective_set = [p for p in [pw_ui, pw_admin] if p]
+    if not effective_set:
         raise HTTPException(status_code=503, detail={"error": "ui_password_not_configured"})
-    if not password or password != ui_password:
+    if not password or (password not in effective_set):
         raise HTTPException(status_code=401, detail={"error": "invalid_credentials"})
     resp = JSONResponse({"ok": True})
     _issue_session_cookie(resp, subject="admin")
