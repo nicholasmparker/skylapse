@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
@@ -153,6 +154,155 @@ class Picamera2Camera(BaseCamera):  # pragma: no cover - exercised on device
             self._picam.stop()
         finally:
             self._picam.close()
+            # Give the kernel a brief moment to release the device
+            time.sleep(0.2)
+
+
+# --- Shared Singleton Picamera2 backend ---
+_PICAM_SINGLETON: Picamera2 | None = None
+_PICAM_LOCK = threading.RLock()
+
+
+class SharedPicamera2Camera(BaseCamera):  # pragma: no cover - exercised on device
+    """Shared camera that reuses a single Picamera2 instance across captures.
+
+    This avoids repeated open/close churn which can leave the device busy.
+    """
+
+    def __init__(
+        self,
+        resolution: tuple[int, int] = (4056, 3040),
+        *,
+        exposure_mode: str = "auto",
+        awb_mode: str = "auto",
+        iso: int | None = None,
+        shutter_speed_us: int | None = None,
+    ):
+        if not PICAMERA2_AVAILABLE:
+            raise RuntimeError("Picamera2 not available in this environment")
+        global _PICAM_SINGLETON
+        with _PICAM_LOCK:
+            if _PICAM_SINGLETON is None:
+                cam = Picamera2()
+                config = cam.create_still_configuration(main={"size": resolution})
+                cam.configure(config)
+                try:
+                    if exposure_mode == "auto":
+                        cam.set_controls({"AeEnable": True})
+                    else:
+                        controls: dict[str, Any] = {"AeEnable": False}
+                        if shutter_speed_us:
+                            controls["ExposureTime"] = int(shutter_speed_us)
+                        if iso:
+                            controls["AnalogueGain"] = max(1.0, float(iso) / 100.0)
+                        cam.set_controls(controls)
+                    if awb_mode == "auto":
+                        cam.set_controls({"AwbEnable": True})
+                    else:
+                        cam.set_controls({"AwbEnable": True})
+                except Exception:
+                    pass
+                cam.start()
+                _PICAM_SINGLETON = cam
+        self._resolution = resolution
+        self._settings = {
+            "camera": "picamera2",
+            "exposure_mode": exposure_mode,
+            "awb_mode": awb_mode,
+            "iso": iso,
+            "shutter_speed_us": shutter_speed_us,
+        }
+
+    def capture(self) -> CaptureResult:
+        with _PICAM_LOCK:
+            assert _PICAM_SINGLETON is not None
+            array = _PICAM_SINGLETON.capture_array()
+        img = Image.fromarray(array)
+        exposure_time = None
+        try:
+            with _PICAM_LOCK:
+                cam = cast(Picamera2, _PICAM_SINGLETON)
+                meta = cam.capture_metadata()
+            exposure_time = int(meta.get("ExposureTime", 0))
+        except Exception:
+            pass
+        return CaptureResult(
+            img,
+            time.time(),
+            exposure_us=exposure_time,
+            settings=self._settings,
+            resolution=self._resolution,
+        )
+
+    def close(self) -> None:
+        # No-op by design; singleton stays alive for process lifetime.
+        return
+
+
+def _parse_resolution(resolution_str: str | None) -> tuple[int, int] | None:
+    if resolution_str and "x" in resolution_str:
+        try:
+            w, h = resolution_str.lower().split("x")
+            return (int(w), int(h))
+        except Exception:
+            return None
+    return None
+
+
+def _init_picam_shared(
+    res: tuple[int, int] | None,
+    *,
+    exposure_mode: str,
+    awb_mode: str,
+    iso: int | None,
+    shutter_speed_us: int | None,
+    strict: bool,
+) -> BaseCamera:
+    last_err: Exception | None = None
+    for attempt in range(3):
+        try:
+            cam = SharedPicamera2Camera(
+                resolution=res or (4056, 3040),
+                exposure_mode=exposure_mode,
+                awb_mode=awb_mode,
+                iso=iso,
+                shutter_speed_us=shutter_speed_us,
+            )
+            print(
+                {
+                    "event": "camera.init",
+                    "backend": "picamera2",
+                    "strict": strict,
+                    "attempt": attempt + 1,
+                    "shared": True,
+                }
+            )
+            return cam
+        except Exception as e:
+            last_err = e
+            print(
+                {
+                    "event": "camera.init.error",
+                    "backend": "picamera2",
+                    "error": str(e),
+                    "strict": strict,
+                    "attempt": attempt + 1,
+                    "shared": True,
+                }
+            )
+            if "busy" in str(e).lower() and attempt < 2:
+                time.sleep(0.3)
+                continue
+            break
+    if strict:
+        raise last_err  # type: ignore[misc]
+    return MockCamera(
+        resolution=res or (1280, 720),
+        exposure_mode=exposure_mode,
+        awb_mode=awb_mode,
+        iso=iso,
+        shutter_speed_us=shutter_speed_us,
+    )
 
 
 def get_camera(
@@ -170,13 +320,7 @@ def get_camera(
     resolution_str: like "4056x3040"; if None will use sane defaults.
     """
     prefer = prefer or os.getenv("SKYLAPSE_CAMERA")
-    res: tuple[int, int] | None = None
-    if resolution_str and "x" in resolution_str:
-        try:
-            w, h = resolution_str.lower().split("x")
-            res = (int(w), int(h))
-        except Exception:
-            res = None
+    res = _parse_resolution(resolution_str)
 
     if prefer == "mock":
         return MockCamera(
@@ -187,70 +331,25 @@ def get_camera(
             shutter_speed_us=shutter_speed_us,
         )
 
-    # Explicit request for picamera2 should be strict: do NOT silently fallback
     if prefer == "picamera2":
-        try:
-            cam = Picamera2Camera(
-                resolution=res or (4056, 3040),
-                exposure_mode=exposure_mode,
-                awb_mode=awb_mode,
-                iso=iso,
-                shutter_speed_us=shutter_speed_us,
-            )
-            print(
-                {
-                    "event": "camera.init",
-                    "backend": "picamera2",
-                    "strict": True,
-                }
-            )
-            return cam
-        except Exception as e:  # pragma: no cover - device specific
-            print(
-                {
-                    "event": "camera.init.error",
-                    "backend": "picamera2",
-                    "error": str(e),
-                    "strict": True,
-                }
-            )
-            raise
+        return _init_picam_shared(
+            res,
+            exposure_mode=exposure_mode,
+            awb_mode=awb_mode,
+            iso=iso,
+            shutter_speed_us=shutter_speed_us,
+            strict=True,
+        )
 
-    # Implicit selection: prefer picamera2 if available; fallback to mock on failure
     if prefer is None and PICAMERA2_AVAILABLE:
-        try:
-            cam = Picamera2Camera(
-                resolution=res or (4056, 3040),
-                exposure_mode=exposure_mode,
-                awb_mode=awb_mode,
-                iso=iso,
-                shutter_speed_us=shutter_speed_us,
-            )
-            print(
-                {
-                    "event": "camera.init",
-                    "backend": "picamera2",
-                    "strict": False,
-                }
-            )
-            return cam
-        except Exception as e:  # pragma: no cover - device specific
-            print(
-                {
-                    "event": "camera.init.error",
-                    "backend": "picamera2",
-                    "error": str(e),
-                    "strict": False,
-                    "fallback": "mock",
-                }
-            )
-            return MockCamera(
-                resolution=res or (1280, 720),
-                exposure_mode=exposure_mode,
-                awb_mode=awb_mode,
-                iso=iso,
-                shutter_speed_us=shutter_speed_us,
-            )
+        return _init_picam_shared(
+            res,
+            exposure_mode=exposure_mode,
+            awb_mode=awb_mode,
+            iso=iso,
+            shutter_speed_us=shutter_speed_us,
+            strict=False,
+        )
 
     # Default fallback
     return MockCamera(

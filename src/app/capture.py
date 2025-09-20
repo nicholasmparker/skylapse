@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -48,18 +49,21 @@ class CaptureService:
         return out_dir
 
     def capture_once(self) -> CaptureOutput:
-        cam: BaseCamera = get_camera(
-            self.camera_prefer,
-            self.resolution_str,
-            exposure_mode=self.exposure_mode,
-            awb_mode=self.awb_mode,
-            iso=self.iso,
-            shutter_speed_us=self.shutter_speed_us,
-        )
-        try:
-            result: CaptureResult = cam.capture()
-        finally:
-            cam.close()
+        # Use a module-level lock to serialize camera access across requests.
+        # This avoids libcamera busy errors if two captures overlap.
+        with _CAM_LOCK:
+            cam: BaseCamera = get_camera(
+                self.camera_prefer,
+                self.resolution_str,
+                exposure_mode=self.exposure_mode,
+                awb_mode=self.awb_mode,
+                iso=self.iso,
+                shutter_speed_us=self.shutter_speed_us,
+            )
+            try:
+                result: CaptureResult = cam.capture()
+            finally:
+                cam.close()
 
         dt = datetime.fromtimestamp(result.captured_at, tz=UTC)
         out_dir = self._ensure_dir(dt)
@@ -111,3 +115,7 @@ class CaptureService:
             captured_at=result.captured_at,
             exposure_us=result.exposure_us,
         )
+
+
+# Module-level re-entrant lock for camera operations
+_CAM_LOCK = threading.RLock()
