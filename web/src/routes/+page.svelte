@@ -33,19 +33,9 @@
   main { display: grid; grid-template-columns: 1fr 360px; gap: 16px; padding: 16px; }
   .panel { border: 1px solid rgba(0,0,0,.15); border-radius: 8px; padding: 12px; background: Canvas; color: CanvasText; }
   img { max-width: 100%; border-radius: 8px; border: 1px solid #ddd; }
-  header { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid #ddd; backdrop-filter: blur(6px); background: color-mix(in oklab, Canvas 85%, transparent); }
-  a { text-decoration: none; color: inherit; margin-right: 12px; }
   button { padding: 8px 10px; border-radius: 6px; cursor: pointer; border: 1px solid #4b5563; background: #111827; color: #fff; }
   @media (prefers-color-scheme: light) { button { background: #2563eb; border-color: #1d4ed8; } }
 </style>
-
-<header>
-  <nav>
-    <a href="/"><strong>Skylapse</strong></a>
-    <a href="/focus">Focus</a>
-  </nav>
-  <button on:click={refresh}>Refresh</button>
-</header>
 
 <main>
   <section class="panel">
@@ -68,5 +58,6 @@
         </li>
       {/each}
     </ul>
+    <div style="margin-top:8px"><button on:click={refresh}>Refresh</button></div>
   </aside>
 </main>

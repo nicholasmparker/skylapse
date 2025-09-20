@@ -187,17 +187,63 @@ def get_camera(
             shutter_speed_us=shutter_speed_us,
         )
 
-    if prefer == "picamera2" or (prefer is None and PICAMERA2_AVAILABLE):
+    # Explicit request for picamera2 should be strict: do NOT silently fallback
+    if prefer == "picamera2":
         try:
-            return Picamera2Camera(
+            cam = Picamera2Camera(
                 resolution=res or (4056, 3040),
                 exposure_mode=exposure_mode,
                 awb_mode=awb_mode,
                 iso=iso,
                 shutter_speed_us=shutter_speed_us,
             )
-        except Exception:
-            # Fallback to mock if hardware init fails
+            print(
+                {
+                    "event": "camera.init",
+                    "backend": "picamera2",
+                    "strict": True,
+                }
+            )
+            return cam
+        except Exception as e:  # pragma: no cover - device specific
+            print(
+                {
+                    "event": "camera.init.error",
+                    "backend": "picamera2",
+                    "error": str(e),
+                    "strict": True,
+                }
+            )
+            raise
+
+    # Implicit selection: prefer picamera2 if available; fallback to mock on failure
+    if prefer is None and PICAMERA2_AVAILABLE:
+        try:
+            cam = Picamera2Camera(
+                resolution=res or (4056, 3040),
+                exposure_mode=exposure_mode,
+                awb_mode=awb_mode,
+                iso=iso,
+                shutter_speed_us=shutter_speed_us,
+            )
+            print(
+                {
+                    "event": "camera.init",
+                    "backend": "picamera2",
+                    "strict": False,
+                }
+            )
+            return cam
+        except Exception as e:  # pragma: no cover - device specific
+            print(
+                {
+                    "event": "camera.init.error",
+                    "backend": "picamera2",
+                    "error": str(e),
+                    "strict": False,
+                    "fallback": "mock",
+                }
+            )
             return MockCamera(
                 resolution=res or (1280, 720),
                 exposure_mode=exposure_mode,

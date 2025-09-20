@@ -1,9 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   let logged = false;
-  let showLogin = false;
-  let password = '';
   let loginErr = '';
+  let password = '';
+  let dlg: HTMLDialogElement | null = null;
+
+  onMount(async () => {
+    dlg = document.getElementById('login-modal') as HTMLDialogElement | null;
+    await checkAuth();
+  });
 
   async function checkAuth() {
     try {
@@ -13,13 +18,20 @@
       logged = false;
     }
   }
+
   async function login() {
     loginErr = '';
     try {
-      const r = await fetch('/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }) });
+      const r = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password })
+      });
       if (!r.ok) throw new Error(String(r.status));
-      logged = true; showLogin = false; password = '';
-    } catch {
+      logged = true;
+      password = '';
+      dlg?.close();
+    } catch (e) {
       loginErr = 'Invalid password';
     }
   }
@@ -27,7 +39,6 @@
     await fetch('/api/logout', { method: 'POST' });
     logged = false;
   }
-  onMount(checkAuth);
 </script>
 
 <style>
@@ -40,6 +51,7 @@
   dialog form { padding: 16px; background: Canvas; color: CanvasText; min-width: 320px; }
   button { padding: 8px 10px; border-radius: 6px; cursor: pointer; border: 1px solid #4b5563; background: #111827; color: #fff; }
   @media (prefers-color-scheme: light) { button { background: #2563eb; border-color: #1d4ed8; } }
+  label { display: block; font-size: 12px; color: #666; margin-top: 8px; }
 </style>
 
 <header>
@@ -53,18 +65,18 @@
       <button on:click={logout}>Logout</button>
     {:else}
       <span class="chip err">Logged out</span>
-      <button on:click={() => { showLogin = true; loginErr = ''; }}>Login</button>
+      <button on:click={() => dlg?.showModal()}>Login</button>
     {/if}
   </div>
 </header>
 
 <slot />
 
-<dialog bind:open={showLogin} on:close={() => (loginErr = '')}>
+<dialog id="login-modal" on:close={() => (loginErr = '')}>
   <form method="dialog">
     <h3>Login</h3>
-    <label>Password</label>
-    <input type="password" bind:value={password} placeholder="Enter password" style="width:100%" />
+    <label for="password">Password</label>
+    <input id="password" type="password" bind:value={password} placeholder="Enter password" style="width:100%" />
     {#if loginErr}<div style="color:#b00; font-size:12px; margin-top:8px">{loginErr}</div>{/if}
     <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:12px">
       <button value="cancel">Cancel</button>

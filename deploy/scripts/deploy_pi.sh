@@ -65,7 +65,7 @@ rsync -az --delete \
 echo "[3/6] Build web frontend (if present) and upload"
 if [[ -d "web" ]]; then
   echo "[3/6] Building frontend locally (web/)"
-  (cd web && npm ci && npm run build)
+  (cd web && npm install && npm run build)
   echo "[3b/6] Upload web build to /opt/skylapse/web"
   run_ssh "mkdir -p /opt/skylapse/web"
   rsync -az --delete \

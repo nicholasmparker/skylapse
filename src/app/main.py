@@ -438,6 +438,23 @@ def capture_and_score(
         iso=cfg.capture.iso,
         shutter_speed_us=cfg.capture.shutter_speed_us,
     )
+    # Debug logging: record selected backend
+    try:
+        backend_name = (
+            getattr(service, "backend_name", None)
+            or getattr(service, "backend", None)
+            or os.getenv("SKYLAPSE_CAMERA")
+        )
+    except Exception:
+        backend_name = os.getenv("SKYLAPSE_CAMERA")
+    print(
+        {
+            "event": "capture_and_score.begin",
+            "backend": backend_name,
+            "lock_ae": lock_ae,
+            "lock_awb": lock_awb,
+        }
+    )
     out = service.capture_once()
     img_path = Path(out.path).resolve()
     img = cv2.imread(str(img_path))
@@ -453,6 +470,7 @@ def capture_and_score(
         "width": int(img.shape[1]),
         "height": int(img.shape[0]),
         "score": score,
+        "backend": backend_name,
     }
 
 
